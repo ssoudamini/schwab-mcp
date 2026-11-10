@@ -22,7 +22,7 @@ from typing_extensions import TypedDict
 
 from schwab_mcp.approvals import ApprovalDecision, ApprovalRequest
 from schwab_mcp.context import SchwabContext
-from schwab_mcp.previews import PreviewOperation
+from schwab_mcp.previews import PreviewEntry, PreviewOperation
 from schwab_mcp.tools._dates import parse_date
 from schwab_mcp.tools._protocols import ToolsClient
 from schwab_mcp.tools._registration import register_tool, run_approval
@@ -957,6 +957,7 @@ async def _finalize_preview(
     order_spec: dict[str, Any],
     tool_name: str,
     summary: str,
+    rationale: str | None = None,
 ) -> dict[str, Any]:
     """Preview an order and cache its successful result.
 
@@ -973,6 +974,7 @@ async def _finalize_preview(
         tool_name,
         summary,
         operation=PreviewOperation.PLACE_ORDER,
+        rationale=rationale,
     )
     return {
         "preview_id": preview_id,
@@ -1219,6 +1221,10 @@ async def preview_equity_order(
         str | None,
         "Order duration: DAY (default), GOOD_TILL_CANCEL (alias: GTC), IMMEDIATE_OR_CANCEL (alias: IOC), FILL_OR_KILL (alias: FOK; Limit/StopLimit only). Invalid values raise ValueError locally.",
     ] = "DAY",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview an equity order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1229,7 +1235,7 @@ async def preview_equity_order(
         symbol, quantity, instruction, order_type, price, stop_price, session, duration
     )
     summary = _order_summary_equity(instruction, quantity, symbol, order_type, price, stop_price)
-    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_equity_order", summary)
+    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_equity_order", summary, rationale)
 
 
 async def preview_option_order(
@@ -1248,6 +1254,10 @@ async def preview_option_order(
         str | None,
         "Order duration: DAY (default), GOOD_TILL_CANCEL (alias: GTC), IMMEDIATE_OR_CANCEL (alias: IOC), FILL_OR_KILL (alias: FOK; Limit only). Invalid values raise ValueError locally.",
     ] = "DAY",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview an option order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1256,7 +1266,7 @@ async def preview_option_order(
     """
     order_spec_dict = _prepare_option_order(symbol, quantity, instruction, order_type, price, session, duration)
     summary = _order_summary_equity(instruction, quantity, symbol, order_type, price)
-    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_option_order", summary)
+    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_option_order", summary, rationale)
 
 
 async def preview_equity_trailing_stop_order(
@@ -1278,6 +1288,10 @@ async def preview_equity_trailing_stop_order(
         str | None,
         "Order duration: DAY (default), GOOD_TILL_CANCEL (alias: GTC), or IMMEDIATE_OR_CANCEL (alias: IOC). Invalid values raise ValueError locally.",
     ] = "DAY",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview a trailing stop order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1295,6 +1309,7 @@ async def preview_equity_trailing_stop_order(
         order_spec_dict,
         "preview_equity_trailing_stop_order",
         summary,
+        rationale,
     )
 
 
@@ -1319,6 +1334,10 @@ async def preview_oco_order(
         str | None,
         "Default order duration for both legs: DAY (default), GOOD_TILL_CANCEL (alias: GTC), IMMEDIATE_OR_CANCEL (alias: IOC). Per-leg duration in OrderDesc overrides this.",
     ] = "DAY",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview an OCO order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1332,7 +1351,7 @@ async def preview_oco_order(
         duration,
     )
     summary = f"OCO: {first_order['instruction']} {first_order['quantity']} {first_order['symbol']} + 1 other"
-    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_oco_order", summary)
+    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_oco_order", summary, rationale)
 
 
 async def preview_trigger_order(
@@ -1359,6 +1378,10 @@ async def preview_trigger_order(
         str | None,
         "Default order duration for all legs: DAY (default), GOOD_TILL_CANCEL (alias: GTC), IMMEDIATE_OR_CANCEL (alias: IOC). Per-leg duration in OrderDesc overrides this.",
     ] = "DAY",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview a trigger order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1375,7 +1398,7 @@ async def preview_trigger_order(
         f"TRIGGER: {entry_order['instruction']} {entry_order['quantity']} "
         f"{entry_order['symbol']} + {len(exit_orders)} exit(s)"
     )
-    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_trigger_order", summary)
+    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_trigger_order", summary, rationale)
 
 
 async def preview_bracket_order(
@@ -1419,6 +1442,10 @@ async def preview_bracket_order(
         str | None,
         "Duration override for exit legs only (take-profit/stop-loss). Defaults to duration when not provided. Common pattern: entry DAY + exits GOOD_TILL_CANCEL.",
     ] = None,
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview a bracket order without placing it. Returns Schwab's projected
     order details (validation results, commission/fees) plus a preview_id.
@@ -1458,7 +1485,9 @@ async def preview_bracket_order(
     if loss_price is not None:
         resolved_leg_types["loss"] = loss_type.upper()
     return {
-        **await _finalize_preview(ctx, account_hash, bracket_order_dict, "preview_bracket_order", summary),
+        **await _finalize_preview(
+            ctx, account_hash, bracket_order_dict, "preview_bracket_order", summary, rationale
+        ),
         "resolved_leg_types": resolved_leg_types,
     }
 
@@ -1484,6 +1513,10 @@ async def preview_option_combo_order(
         str | None,
         "Optional complex type: IRON_CONDOR, VERTICAL, CALENDAR, CUSTOM, etc. Defaults to CUSTOM.",
     ] = "CUSTOM",
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this trade is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview a multi-leg option combo order without placing it. Returns Schwab's
     projected order details (validation results, commission/fees) plus a preview_id.
@@ -1494,7 +1527,9 @@ async def preview_option_combo_order(
         legs, order_type, price, session, duration, complex_order_strategy_type
     )
     summary = f"COMBO: {len(legs)} option legs, {order_type.upper()}"
-    return await _finalize_preview(ctx, account_hash, order_spec_dict, "preview_option_combo_order", summary)
+    return await _finalize_preview(
+        ctx, account_hash, order_spec_dict, "preview_option_combo_order", summary, rationale
+    )
 
 
 async def preview_replacement_order(
@@ -1507,6 +1542,10 @@ async def preview_replacement_order(
         "Optional: price, stop_price, trail_offset, trail_type, asset_type, session, duration. "
         "Only one equity, option, or equity trailing-stop order is supported; composites are not supported.",
     ],
+    rationale: Annotated[
+        str | None,
+        "Brief explanation of why this replacement is being made -- shown to the human reviewer who approves write operations.",
+    ] = None,
 ) -> JSONType:
     """Preview a replacement for one existing order without writing it.
 
@@ -1527,6 +1566,7 @@ async def preview_replacement_order(
         _replacement_summary(order_spec),
         operation=PreviewOperation.REPLACE_ORDER,
         target_order_id=normalized_order_id,
+        rationale=rationale,
     )
     return {
         "preview_id": preview_id,
@@ -1534,6 +1574,82 @@ async def preview_replacement_order(
         "action": _replacement_preview_action(account_hash, preview_id),
         "target_order_id": normalized_order_id,
     }
+
+
+async def _build_approval_arguments(
+    ctx: SchwabContext,
+    entry: PreviewEntry,
+    account_hash: str,
+    *,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a rich, structured arguments mapping for an approval request
+    from a cached preview -- the fields a human reviewer actually wants
+    (ticker, action, quantity, order type, limit/stop price, session,
+    duration, rationale, and for a single-leg order, a live bid/ask/mid
+    snapshot fetched fresh at approval time, not the preview-time price).
+
+    Every approval backend (Discord/Signal/Slack) renders whatever is in
+    this mapping, so this is a shared enrichment point, not something
+    specific to one backend.
+
+    A single-leg order's fields are broken out individually; a
+    multi-leg/composite order (OCO/trigger/bracket/combo) still only gets
+    ``summary`` -- there's no one ticker/price to break out for those.
+    The live quote fetch is strictly best-effort: a failure here (rate
+    limit, bad symbol, network hiccup) must never block or fail the
+    approval flow itself, so any exception is swallowed and the bid/ask/
+    mid fields are simply omitted.
+    """
+    args: dict[str, str] = {
+        "original_tool": entry.tool_name,
+        "order_summary": entry.summary,
+        "account_hash": account_hash,
+    }
+    if entry.rationale:
+        args["rationale"] = entry.rationale
+
+    legs = entry.order_spec.get("orderLegCollection", [])
+    if isinstance(legs, list) and len(legs) == 1 and isinstance(legs[0], dict):
+        leg = legs[0]
+        instrument = leg.get("instrument") if isinstance(leg.get("instrument"), dict) else {}
+        symbol = instrument.get("symbol")
+        if symbol:
+            args["ticker"] = symbol
+        if leg.get("instruction"):
+            args["action"] = str(leg["instruction"])
+        if leg.get("quantity") is not None:
+            args["quantity"] = str(leg["quantity"])
+        if entry.order_spec.get("orderType"):
+            args["order_type"] = str(entry.order_spec["orderType"])
+        if "price" in entry.order_spec:
+            args["price"] = str(entry.order_spec["price"])
+        if "stopPrice" in entry.order_spec:
+            args["stop_price"] = str(entry.order_spec["stopPrice"])
+        if entry.order_spec.get("session"):
+            args["session"] = str(entry.order_spec["session"])
+        if entry.order_spec.get("duration"):
+            args["duration"] = str(entry.order_spec["duration"])
+
+        if symbol:
+            try:
+                quote_payload = await call(ctx.quotes.get_quotes, [symbol])
+            except Exception:
+                quote_payload = None
+            quote_entry = quote_payload.get(symbol) if isinstance(quote_payload, dict) else None
+            quote_sub = quote_entry.get("quote") if isinstance(quote_entry, dict) else None
+            if isinstance(quote_sub, dict):
+                bid, ask = quote_sub.get("bidPrice"), quote_sub.get("askPrice")
+                if bid is not None:
+                    args["bid"] = str(bid)
+                if ask is not None:
+                    args["ask"] = str(ask)
+                if isinstance(bid, (int, float)) and isinstance(ask, (int, float)):
+                    args["mid"] = f"{(bid + ask) / 2:.2f}"
+
+    if extra:
+        args.update(extra)
+    return args
 
 
 async def place_previewed_order(
@@ -1557,12 +1673,9 @@ async def place_previewed_order(
         tool_name="place_previewed_order",
         request_id=ctx.request_id,
         client_id=ctx.client_id,
-        arguments={
-            "original_tool": entry.tool_name,
-            "order_summary": entry.summary,
-            "preview_id": preview_id,
-            "account_hash": account_hash,
-        },
+        arguments=await _build_approval_arguments(
+            ctx, entry, account_hash, extra={"preview_id": preview_id}
+        ),
     )
 
     decision = await run_approval(ctx, request)
@@ -1607,14 +1720,16 @@ async def replace_previewed_order(
         tool_name="replace_previewed_order",
         request_id=ctx.request_id,
         client_id=ctx.client_id,
-        arguments={
-            "original_tool": entry.tool_name,
-            "order_summary": entry.summary,
-            "preview_id": preview_id,
-            "account_hash": account_hash,
-            "target_order_id": target_order_id,
-            "order_id": target_order_id,
-        },
+        arguments=await _build_approval_arguments(
+            ctx,
+            entry,
+            account_hash,
+            extra={
+                "preview_id": preview_id,
+                "target_order_id": target_order_id,
+                "order_id": target_order_id,
+            },
+        ),
     )
 
     decision = await run_approval(ctx, request)

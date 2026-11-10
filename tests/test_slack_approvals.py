@@ -342,3 +342,84 @@ def test_account_label_none_without_account_hash_argument() -> None:
         )
     )
     assert mgr._account_label({}) is None
+
+
+# ---------------------------------------------------------------------------
+# Structured argument rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_argument_blocks_renders_known_fields_as_a_grid() -> None:
+    mgr = make_manager()
+    blocks = mgr._render_argument_blocks(
+        {
+            "ticker": "AAPL",
+            "action": "BUY",
+            "quantity": "10",
+            "order_type": "LIMIT",
+            "price": "150.00",
+            "session": "NORMAL",
+            "duration": "DAY",
+            "bid": "149.95",
+            "ask": "150.05",
+            "mid": "150.00",
+        }
+    )
+    field_block = blocks[0]
+    assert field_block["type"] == "section"
+    texts = [f["text"] for f in field_block["fields"]]
+    assert "*Ticker:*\nAAPL" in texts
+    assert "*Action:*\nBUY" in texts
+    assert "*Quantity:*\n10" in texts
+    assert "*Order Type:*\nLIMIT" in texts
+    assert "*Limit Price:*\n150.00" in texts
+    assert "*Session:*\nNORMAL" in texts
+    assert "*Duration:*\nDAY" in texts
+    assert "*Bid:*\n149.95" in texts
+    assert "*Ask:*\n150.05" in texts
+    assert "*Mid:*\n150.00" in texts
+
+
+def test_render_argument_blocks_includes_rationale_and_summary() -> None:
+    mgr = make_manager()
+    blocks = mgr._render_argument_blocks(
+        {"order_summary": "BUY 10 AAPL LIMIT @ 150.00", "rationale": "Hedging earnings risk."}
+    )
+    texts = [b["text"]["text"] for b in blocks if "text" in b]
+    assert any("Hedging earnings risk." in t for t in texts)
+    assert any("BUY 10 AAPL LIMIT @ 150.00" in t for t in texts)
+
+
+def test_render_argument_blocks_omits_rationale_when_absent() -> None:
+    mgr = make_manager()
+    blocks = mgr._render_argument_blocks({"order_summary": "BUY 10 AAPL LIMIT @ 150.00"})
+    texts = [b["text"]["text"] for b in blocks if "text" in b]
+    assert not any("Rationale" in t for t in texts)
+
+
+def test_render_argument_blocks_falls_back_for_multi_leg_orders() -> None:
+    """A multi-leg order (OCO/trigger/bracket/combo) has no single ticker
+    to break out -- it should still render via the generic fallback dump,
+    not silently drop its summary/bookkeeping fields."""
+    mgr = make_manager()
+    blocks = mgr._render_argument_blocks(
+        {"original_tool": "preview_oco_order", "order_summary": "OCO: LIMIT 150 / STOP 140", "preview_id": "abc123"}
+    )
+    assert not any(b.get("fields") for b in blocks)
+    texts = [b["text"]["text"] for b in blocks if "text" in b]
+    assert any("OCO: LIMIT 150 / STOP 140" in t for t in texts)
+    assert any("preview_id" in t for t in texts)
+
+
+def test_render_argument_blocks_excludes_account_hash_from_fallback_dump() -> None:
+    """account_hash is rendered separately via _account_label, not dumped
+    again in the generic fallback section."""
+    mgr = make_manager()
+    blocks = mgr._render_argument_blocks({"order_summary": "x", "account_hash": "0123456789ABCDEF5805"})
+    texts = [b["text"]["text"] for b in blocks if "text" in b]
+    assert not any("account_hash" in t for t in texts)
+
+
+def test_render_argument_blocks_empty_arguments_yields_no_blocks() -> None:
+    mgr = make_manager()
+    assert mgr._render_argument_blocks({}) == []

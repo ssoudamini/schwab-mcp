@@ -92,6 +92,31 @@ def test_blank_replacement_target_id_is_rejected():
         )
 
 
+def test_rationale_is_stored_and_stripped():
+    store = PreviewStore()
+    preview_id = store.put(
+        ACCOUNT, SPEC, TOOL, SUMMARY, operation=PreviewOperation.PLACE_ORDER, rationale="  Hedging earnings.  "
+    )
+    entry = store.pop(preview_id, ACCOUNT, operation=PreviewOperation.PLACE_ORDER)
+    assert entry.rationale == "Hedging earnings."
+
+
+def test_rationale_defaults_to_none():
+    store = PreviewStore()
+    preview_id = store.put(ACCOUNT, SPEC, TOOL, SUMMARY, operation=PreviewOperation.PLACE_ORDER)
+    entry = store.pop(preview_id, ACCOUNT, operation=PreviewOperation.PLACE_ORDER)
+    assert entry.rationale is None
+
+
+def test_blank_rationale_normalizes_to_none():
+    store = PreviewStore()
+    preview_id = store.put(
+        ACCOUNT, SPEC, TOOL, SUMMARY, operation=PreviewOperation.PLACE_ORDER, rationale="   "
+    )
+    entry = store.pop(preview_id, ACCOUNT, operation=PreviewOperation.PLACE_ORDER)
+    assert entry.rationale is None
+
+
 def test_pop_unknown_id_raises():
     store = PreviewStore()
     with pytest.raises(ValueError, match="not found or expired"):

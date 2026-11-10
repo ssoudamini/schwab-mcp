@@ -1833,6 +1833,40 @@ class TestPreviewEquityOrder:
         assert entry.tool_name == "preview_equity_order"
         assert entry.order_spec["orderType"] == "LIMIT"
 
+    def test_rationale_is_threaded_through_to_the_cached_entry(self, monkeypatch):
+        client = DummyPreviewClient()
+        ctx = make_ctx(client)
+
+        async def fake_call(func, *args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(orders, "call", fake_call)
+
+        result = run(
+            orders.preview_equity_order(
+                ctx, "acc123", "AAPL", 100, "BUY", "LIMIT", price=150.0, rationale="Adding to a core position."
+            )
+        )
+
+        preview_id = result["preview_id"]
+        entry = ctx.previews.pop(preview_id, "acc123", operation=orders.PreviewOperation.PLACE_ORDER)
+        assert entry.rationale == "Adding to a core position."
+
+    def test_rationale_defaults_to_none_when_not_supplied(self, monkeypatch):
+        client = DummyPreviewClient()
+        ctx = make_ctx(client)
+
+        async def fake_call(func, *args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(orders, "call", fake_call)
+
+        result = run(orders.preview_equity_order(ctx, "acc123", "AAPL", 100, "BUY", "LIMIT", price=150.0))
+
+        preview_id = result["preview_id"]
+        entry = ctx.previews.pop(preview_id, "acc123", operation=orders.PreviewOperation.PLACE_ORDER)
+        assert entry.rationale is None
+
     def test_failed_preview_is_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed preview API call must not leave an executable cache entry."""
         client = DummyPreviewClient()
@@ -1974,6 +2008,24 @@ class TestPreviewOcoOrder:
         entry = ctx.previews.pop(result["preview_id"], "acc123", operation=orders.PreviewOperation.PLACE_ORDER)
         assert entry.tool_name == "preview_oco_order"
         assert "OCO" in entry.summary
+
+    def test_rationale_is_threaded_through_to_the_cached_entry(self, monkeypatch):
+        client = DummyPreviewClient()
+        ctx = make_ctx(client)
+
+        async def fake_call(func, *args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(orders, "call", fake_call)
+
+        result = run(
+            orders.preview_oco_order(  # type: ignore[arg-type]
+                ctx, "acc123", self._LIMIT_LEG, self._STOP_LEG, rationale="Protecting gains into earnings."
+            )
+        )
+
+        entry = ctx.previews.pop(result["preview_id"], "acc123", operation=orders.PreviewOperation.PLACE_ORDER)
+        assert entry.rationale == "Protecting gains into earnings."
 
 
 class TestPreviewTriggerOrder:
@@ -2561,3 +2613,131 @@ class TestEquityLegSymbols:
         assert orders._equity_leg_symbols({}) == []
         malformed = {"orderLegCollection": ["junk", {"instrument": "junk"}], "childOrderStrategies": ["junk"]}
         assert orders._equity_leg_symbols(malformed) == []
+
+
+class TestBuildApprovalArguments:
+    """Tests for _build_approval_arguments: the shared helper that turns a
+    cached preview into the structured, enriched arguments every approval
+    backend (Discord/Signal/Slack) renders -- ticker/action/quantity/order
+    type/price/session/duration, a live bid/ask/mid snapshot for single-leg
+    orders, and the caller-supplied rationale."""
+
+    ACCOUNT_HASH = "acct_abc123"
+
+    SINGLE_LEG_SPEC = {
+        "session": "NORMAL",
+        "duration": "DAY",
+        "orderType": "LIMIT",
+        "price": "150.00",
+        "orderLegCollection": [
+            {
+                "instruction": "BUY",
+                "quantity": 10,
+                "instrument": {"symbol": "AAPL", "assetType": "EQUITY"},
+            }
+        ],
+    }
+
+    def _entry(self, **overrides: Any) -> Any:
+        from schwab_mcp.previews import PreviewEntry
+
+        defaults = dict(
+            order_spec=self.SINGLE_LEG_SPEC,
+            account_hash=self.ACCOUNT_HASH,
+            tool_name="preview_equity_order",
+            summary="BUY 10 AAPL LIMIT @ $150.00",
+            created_at=0.0,
+            operation=orders.PreviewOperation.PLACE_ORDER,
+            target_order_id=None,
+        )
+        defaults.update(overrides)
+        return PreviewEntry(**defaults)
+
+    def test_extracts_structured_fields_from_a_single_leg_order(self, monkeypatch):
+        from schwab_mcp.tools import orders as orders_mod
+
+        async def fake_call(func, *args, **kwargs):
+            raise AssertionError("quote fetch should not be attempted without a quotes client")
+
+        monkeypatch.setattr(orders_mod, "call", fake_call)
+        ctx = make_ctx(DummyOrdersClient())
+        args = run(orders_mod._build_approval_arguments(ctx, self._entry(), self.ACCOUNT_HASH))
+
+        assert args["ticker"] == "AAPL"
+        assert args["action"] == "BUY"
+        assert args["quantity"] == "10"
+        assert args["order_type"] == "LIMIT"
+        assert args["price"] == "150.00"
+        assert args["session"] == "NORMAL"
+        assert args["duration"] == "DAY"
+        assert args["account_hash"] == self.ACCOUNT_HASH
+        assert args["order_summary"] == "BUY 10 AAPL LIMIT @ $150.00"
+        assert args["original_tool"] == "preview_equity_order"
+
+    def test_quote_fetch_failure_is_swallowed_not_raised(self):
+        """A live quote fetch is best-effort: the client here has no
+        get_quotes at all, so attribute access raises AttributeError --
+        the helper must still return the rest of the structured fields
+        rather than letting that failure block the approval flow."""
+        ctx = make_ctx(DummyOrdersClient())
+        args = run(orders._build_approval_arguments(ctx, self._entry(), self.ACCOUNT_HASH))
+        assert "bid" not in args
+        assert "ask" not in args
+        assert "mid" not in args
+        assert args["ticker"] == "AAPL"
+
+    def test_successful_quote_fetch_adds_bid_ask_mid(self):
+        class QuotingClient(DummyOrdersClient):
+            async def get_quotes(self, symbols: list[str], **kwargs: Any) -> httpx.Response:
+                request = httpx.Request("GET", "https://api.schwabapi.com/marketdata/v1/quotes")
+                return httpx.Response(
+                    200,
+                    json={"AAPL": {"symbol": "AAPL", "quote": {"bidPrice": 149.5, "askPrice": 150.5}}},
+                    request=request,
+                )
+
+        ctx = make_ctx(QuotingClient())
+        args = run(orders._build_approval_arguments(ctx, self._entry(), self.ACCOUNT_HASH))
+        assert args["bid"] == "149.5"
+        assert args["ask"] == "150.5"
+        assert args["mid"] == "150.00"
+
+    def test_multi_leg_order_falls_back_to_summary_only(self):
+        """A multi-leg order (two legs here) has no single ticker/price to
+        break out -- the helper must not raise or fabricate structured
+        fields for it, just carry the summary through."""
+        multi_leg_spec = {
+            "orderStrategyType": "OCO",
+            "orderLegCollection": [
+                {"instruction": "SELL", "quantity": 1, "instrument": {"symbol": "AAPL"}},
+                {"instruction": "SELL", "quantity": 1, "instrument": {"symbol": "AAPL"}},
+            ],
+        }
+        ctx = make_ctx(DummyOrdersClient())
+        entry = self._entry(
+            order_spec=multi_leg_spec, tool_name="preview_oco_order", summary="OCO: LIMIT 150 / STOP 140"
+        )
+        args = run(orders._build_approval_arguments(ctx, entry, self.ACCOUNT_HASH))
+        assert "ticker" not in args
+        assert "action" not in args
+        assert args["order_summary"] == "OCO: LIMIT 150 / STOP 140"
+
+    def test_includes_rationale_when_present(self):
+        ctx = make_ctx(DummyOrdersClient())
+        entry = self._entry(rationale="Hedging ahead of earnings.")
+        args = run(orders._build_approval_arguments(ctx, entry, self.ACCOUNT_HASH))
+        assert args["rationale"] == "Hedging ahead of earnings."
+
+    def test_omits_rationale_when_absent(self):
+        ctx = make_ctx(DummyOrdersClient())
+        args = run(orders._build_approval_arguments(ctx, self._entry(), self.ACCOUNT_HASH))
+        assert "rationale" not in args
+
+    def test_extra_overrides_are_merged_in(self):
+        ctx = make_ctx(DummyOrdersClient())
+        args = run(
+            orders._build_approval_arguments(
+                ctx, self._entry(), self.ACCOUNT_HASH, extra={"preview_id": "abc123"}
+            )
+        )
+        assert args["preview_id"] == "abc123"

@@ -179,10 +179,7 @@ class SlackApprovalManager(ApprovalManager):
             lines.append(f"Client ID: {request.client_id}")
 
         blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
-        if request.arguments:
-            blocks.append(
-                {"type": "section", "text": {"type": "mrkdwn", "text": format_arguments(request.arguments)}}
-            )
+        blocks.extend(self._render_argument_blocks(request.arguments))
         blocks.append(
             {
                 "type": "actions",
@@ -222,22 +219,71 @@ class SlackApprovalManager(ApprovalManager):
         lines.append(f"Approval ID: {pending.request.id}")
         if pending.request.client_id:
             lines.append(f"Client ID: {pending.request.client_id}")
-        if pending.request.arguments:
-            lines.append(format_arguments(pending.request.arguments))
         if actor_id is not None:
             lines.append(f"Actor: <@{actor_id}>")
         if reason:
             lines.append(f"Notes: {reason}")
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
+        blocks.extend(self._render_argument_blocks(pending.request.arguments))
 
         try:
             await self._web_client.chat_update(
                 channel=pending.channel,
                 ts=pending.message_ts,
                 text=f"Write operation {decision.value}: {pending.request.tool_name}",
-                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}],
+                blocks=blocks,
             )
         except SlackApiError:
             logger.warning("Failed to update Slack approval message for request %s", pending.request.id, exc_info=True)
+
+    _LABELED_FIELDS: tuple[tuple[str, str], ...] = (
+        ("ticker", "Ticker"),
+        ("action", "Action"),
+        ("quantity", "Quantity"),
+        ("order_type", "Order Type"),
+        ("price", "Limit Price"),
+        ("stop_price", "Stop Price"),
+        ("session", "Session"),
+        ("duration", "Duration"),
+        ("bid", "Bid"),
+        ("ask", "Ask"),
+        ("mid", "Mid"),
+    )
+
+    def _render_argument_blocks(self, arguments: Mapping[str, str]) -> list[dict]:
+        """Render an approval request's arguments as labeled Block Kit
+        sections: known order fields (ticker/action/quantity/order type/
+        price/session/duration/live bid-ask-mid) as a field grid, the
+        rationale and summary each as their own line, and anything else
+        (bookkeeping like preview_id, or a multi-leg order's lack of
+        structured fields) as the generic fallback dump -- so a reviewer
+        always sees the full order picture, not just a flat key=value list."""
+        if not arguments:
+            return []
+
+        blocks: list[dict] = []
+        order_fields = [
+            {"type": "mrkdwn", "text": f"*{label}:*\n{arguments[key]}"}
+            for key, label in self._LABELED_FIELDS
+            if arguments.get(key)
+        ]
+        if order_fields:
+            blocks.append({"type": "section", "fields": order_fields})
+
+        rationale = arguments.get("rationale")
+        if rationale:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Rationale:*\n{rationale}"}})
+
+        summary = arguments.get("order_summary")
+        if summary:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:*\n{summary}"}})
+
+        rendered_keys = {key for key, _ in self._LABELED_FIELDS} | {"rationale", "order_summary", "account_hash"}
+        remaining = {key: value for key, value in arguments.items() if key not in rendered_keys}
+        if remaining:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": format_arguments(remaining)}})
+        return blocks
 
     def _account_label(self, arguments: Mapping[str, str]) -> str | None:
         if not self._settings.account_names:

@@ -31,6 +31,11 @@ class PreviewEntry:
     created_at: float
     operation: PreviewOperation
     target_order_id: str | None
+    rationale: str | None = None
+    """Caller-supplied explanation of why this trade is being made --
+    surfaced to the approval reviewer alongside the order details. Never
+    derived or inferred server-side; absent if the caller didn't supply
+    one."""
 
 
 class PreviewStore:
@@ -69,6 +74,7 @@ class PreviewStore:
         *,
         operation: PreviewOperation | str,
         target_order_id: str | None = None,
+        rationale: str | None = None,
     ) -> str:
         """Store a preview entry and return its 16-char hex id.
 
@@ -97,6 +103,7 @@ class PreviewStore:
             created_at=time.monotonic(),
             operation=normalized_operation,
             target_order_id=normalized_target_order_id,
+            rationale=(rationale.strip() or None) if rationale else None,
         )
         return preview_id
 
