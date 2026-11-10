@@ -394,7 +394,7 @@ def test_server_rejects_both_discord_and_signal(monkeypatch, cli_server_capture,
     )
 
     assert result.exit_code == 1
-    assert "not both" in result.output
+    assert "exactly one approval backend" in result.output
 
 
 def test_server_exits_when_signal_approvers_missing(monkeypatch, cli_server_capture, cli_runner):

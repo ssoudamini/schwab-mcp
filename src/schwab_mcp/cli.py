@@ -17,6 +17,8 @@ from schwab_mcp.approvals import (
     NoOpApprovalManager,
     SignalApprovalManager,
     SignalApprovalSettings,
+    SlackApprovalManager,
+    SlackApprovalSettings,
 )
 from schwab_mcp.server import SchwabMCPServer, send_error_response
 
@@ -131,6 +133,12 @@ def _select_write_mode(
     signal_approver: tuple[str, ...],
     signal_timeout: int,
     signal_account_name: tuple[str, ...],
+    slack_token: str | None,
+    slack_app_token: str | None,
+    slack_channel_id: str | None,
+    slack_approver: tuple[str, ...],
+    slack_timeout: int,
+    slack_account_name: tuple[str, ...],
 ) -> tuple[ApprovalManager, bool] | None:
     """Choose write access and its approval manager from resolved CLI values."""
     if jesus_take_the_wheel:
@@ -138,13 +146,40 @@ def _select_write_mode(
 
     discord_requested = any((discord_token, discord_channel_id, approver_values))
     signal_requested = any((signal_account, signal_approver))
-    if discord_requested and signal_requested:
+    slack_requested = any((slack_token, slack_app_token, slack_channel_id, slack_approver))
+    requested_count = sum((discord_requested, signal_requested, slack_requested))
+    if requested_count > 1:
         send_error_response(
-            "Configure either Discord or Signal approvals, not both.",
+            "Configure exactly one approval backend (Discord, Signal, or Slack), not several.",
             code=400,
-            details={"discord": True, "signal": True},
+            details={"discord": discord_requested, "signal": signal_requested, "slack": slack_requested},
         )
         return None
+    if slack_requested:
+        approver_ids = SlackApprovalManager.authorized_user_ids(slack_approver)
+        if not slack_token or not slack_app_token or not slack_channel_id or not approver_ids:
+            send_error_response(
+                "Slack approval configuration is required to enable write tools.",
+                code=400,
+                details={
+                    "missing_token": not bool(slack_token),
+                    "missing_app_token": not bool(slack_app_token),
+                    "missing_channel_id": not bool(slack_channel_id),
+                    "missing_approvers": not bool(approver_ids),
+                },
+            )
+            return None
+        manager = SlackApprovalManager(
+            SlackApprovalSettings(
+                bot_token=slack_token,
+                app_token=slack_app_token,
+                channel_id=slack_channel_id,
+                approver_ids=approver_ids,
+                timeout_seconds=float(slack_timeout),
+                account_names=SlackApprovalManager.parse_account_names(slack_account_name),
+            )
+        )
+        return manager, True
     if signal_requested:
         approver_numbers = SignalApprovalManager.authorized_numbers(signal_approver)
         if not signal_account or not approver_numbers:
@@ -302,6 +337,49 @@ def _select_write_mode(
     ),
 )
 @click.option(
+    "--slack-token",
+    type=str,
+    envvar="SCHWAB_MCP_SLACK_TOKEN",
+    help="Slack bot (xoxb-) token used for approval prompts.",
+)
+@click.option(
+    "--slack-app-token",
+    type=str,
+    envvar="SCHWAB_MCP_SLACK_APP_TOKEN",
+    help="Slack app-level (xapp-) token for Socket Mode.",
+)
+@click.option(
+    "--slack-channel-id",
+    type=str,
+    envvar="SCHWAB_MCP_SLACK_CHANNEL_ID",
+    help="Slack channel ID where approval requests are posted.",
+)
+@click.option(
+    "--slack-approver",
+    type=str,
+    multiple=True,
+    help="Slack user ID allowed to approve or deny requests. Pass multiple times for several reviewers.",
+)
+@click.option(
+    "--slack-timeout",
+    type=int,
+    default=600,
+    show_default=True,
+    envvar="SCHWAB_MCP_SLACK_TIMEOUT",
+    help="Seconds to wait for Slack approval before timing out.",
+)
+@click.option(
+    "--slack-account-name",
+    type=str,
+    multiple=True,
+    help=(
+        "Friendly name to display in approval messages for an account, "
+        "keyed by the last 4 chars of its hash. Format: 'last4=Name'. "
+        "Pass multiple times, or set SCHWAB_MCP_SLACK_ACCOUNT_NAMES to a "
+        "comma-separated value (e.g. 'A1B2=Example Brokerage')."
+    ),
+)
+@click.option(
     "--json",
     "json_output",
     default=False,
@@ -348,6 +426,12 @@ def server(
     signal_approver: tuple[str, ...],
     signal_timeout: int,
     signal_account_name: tuple[str, ...],
+    slack_token: str | None,
+    slack_app_token: str | None,
+    slack_channel_id: str | None,
+    slack_approver: tuple[str, ...],
+    slack_timeout: int,
+    slack_account_name: tuple[str, ...],
     no_technical_tools: bool,
     json_output: bool,
     use_http: bool,
@@ -446,6 +530,22 @@ def server(
                 # parse_account_names comma-splits each entry itself.
                 signal_account_name_values = (env_signal_names,)
 
+        # Slack env vars are comma-split by hand, same reason as Signal's
+        # above: Click splits multiple=True env values on whitespace.
+        slack_approver_values: tuple[str, ...] = slack_approver
+        if not slack_approver_values:
+            env_slack_approvers = os.getenv("SCHWAB_MCP_SLACK_APPROVERS")
+            if env_slack_approvers:
+                slack_approver_values = tuple(
+                    value.strip() for value in env_slack_approvers.split(",") if value.strip()
+                )
+
+        slack_account_name_values: tuple[str, ...] = slack_account_name
+        if not slack_account_name_values:
+            env_slack_names = os.getenv("SCHWAB_MCP_SLACK_ACCOUNT_NAMES")
+            if env_slack_names:
+                slack_account_name_values = (env_slack_names,)
+
         write_mode = _select_write_mode(
             jesus_take_the_wheel=jesus_take_the_wheel,
             discord_token=discord_token,
@@ -458,6 +558,12 @@ def server(
             signal_approver=signal_approver_values,
             signal_timeout=signal_timeout,
             signal_account_name=signal_account_name_values,
+            slack_token=slack_token,
+            slack_app_token=slack_app_token,
+            slack_channel_id=slack_channel_id,
+            slack_approver=slack_approver_values,
+            slack_timeout=slack_timeout,
+            slack_account_name=slack_account_name_values,
         )
         if write_mode is None:
             return 1
@@ -469,6 +575,8 @@ def server(
             )
         if signal_account_name_values and not isinstance(approval_manager, SignalApprovalManager):
             click.echo("Warning: Signal account names are ignored because Signal approvals are not enabled.", err=True)
+        if slack_account_name_values and not isinstance(approval_manager, SlackApprovalManager):
+            click.echo("Warning: Slack account names are ignored because Slack approvals are not enabled.", err=True)
 
         backend_configured = any(
             (
@@ -477,6 +585,10 @@ def server(
                 approver_values,
                 signal_account,
                 signal_approver_values,
+                slack_token,
+                slack_app_token,
+                slack_channel_id,
+                slack_approver_values,
             )
         )
         if jesus_take_the_wheel and backend_configured:

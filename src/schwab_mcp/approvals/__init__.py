@@ -16,6 +16,10 @@ from schwab_mcp.approvals.signal import (
     SignalApprovalManager,
     SignalApprovalSettings,
 )
+from schwab_mcp.approvals.slack import (
+    SlackApprovalManager,
+    SlackApprovalSettings,
+)
 
 __all__ = [
     "ApprovalDecision",
@@ -26,4 +30,6 @@ __all__ = [
     "DiscordApprovalSettings",
     "SignalApprovalManager",
     "SignalApprovalSettings",
+    "SlackApprovalManager",
+    "SlackApprovalSettings",
 ]
